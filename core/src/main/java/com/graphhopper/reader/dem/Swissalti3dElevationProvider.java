@@ -20,6 +20,7 @@ package com.graphhopper.reader.dem;
 import com.graphhopper.util.Downloader;
 import com.graphhopper.util.Helper;
 import org.apache.xmlgraphics.image.codec.util.SeekableStream;
+import org.locationtech.proj4j.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,6 +84,13 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
         this("");
     }
 
+    private CoordinateTransform getCoordinatesTransform() {
+        CRSFactory crsFactory = new CRSFactory();
+        CoordinateReferenceSystem WGS84 = crsFactory.createFromName("epsg:4326");
+        CoordinateReferenceSystem epsg2056 = crsFactory.createFromName("epsg:2056");
+        CoordinateTransformFactory ctFactory = new CoordinateTransformFactory();
+        return ctFactory.createTransform(WGS84, epsg2056);
+    }
 
     private Map<String, String> fetchTileMapping(Downloader downloader) throws IOException {
         String response = downloader.downloadAsString(Swissalti3dElevationProvider.tilingSchemeUrl, false);
@@ -149,9 +157,11 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
 
     @Override
     public double getEle(double lat, double lon) {
-        // FIXME: use proj4j
-        int x = 2571970;
-        int y = 1116492;
+        CoordinateTransform transform = getCoordinatesTransform();
+        ProjCoordinate result = new ProjCoordinate();
+        transform.transform(new ProjCoordinate(lon, lat), result);
+        int x = (int) result.x;
+        int y = (int) result.y;
         if (isInsideSupportedArea(x, y)) {
             try {
                 Raster raster = getRasterContainingCoordinate(x, y);
