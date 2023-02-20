@@ -749,7 +749,8 @@ public class GraphHopper {
         } else if (eleProviderStr.equalsIgnoreCase("skadi")) {
             elevationProvider = new SkadiProvider(cacheDirStr);
         } else if (eleProviderStr.equalsIgnoreCase("swissalti3d")) {
-            elevationProvider = new Swissalti3dElevationProvider(cacheDirStr);
+            elevationProvider = new Swissalti3dElevationProvider(cacheDirStr)
+                    .setAutoRemoveTemporaryFiles(ghConfig.getBool("graph.elevation.clear", false));
         }
 
         if (elevationProvider instanceof TileBasedElevationProvider) {

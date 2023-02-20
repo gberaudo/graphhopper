@@ -19,6 +19,7 @@ package com.graphhopper.reader.dem;
 
 import com.graphhopper.util.Downloader;
 import com.graphhopper.util.Helper;
+import org.apache.commons.io.FileUtils;
 import org.apache.xmlgraphics.image.codec.util.SeekableStream;
 import org.locationtech.proj4j.*;
 import org.slf4j.Logger;
@@ -55,15 +56,24 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
 
     private final Map<String, Raster> rasterByXY = new HashMap<>();
 
+    void setDownloader(Downloader downloader) {
+        this.downloader = downloader;
+    }
+
     private Downloader downloader;
+
+    private boolean autoremoveTemporary = false;
 
     @Override
     public boolean canInterpolate() {
-        return true; // FIXME: what's this?
+        return false;
     }
 
     @Override
     public void release() {
+        if (autoremoveTemporary) {
+            cacheDir.delete();
+        }
     }
 
 
@@ -84,7 +94,11 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
         this("");
     }
 
-    private CoordinateTransform getCoordinatesTransform() {
+    /**
+     * Create a transform for projecting from EPSG:4326 to EPSG:2056 (Swiss projections)
+     * @return the proj4j transform
+     */
+    CoordinateTransform getCoordinatesTransform() {
         CRSFactory crsFactory = new CRSFactory();
         CoordinateReferenceSystem WGS84 = crsFactory.createFromName("epsg:4326");
         CoordinateReferenceSystem epsg2056 = crsFactory.createFromName("epsg:2056");
@@ -92,11 +106,26 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
         return ctFactory.createTransform(WGS84, epsg2056);
     }
 
+    /**
+     * Fetch some remote files and create a mapping from (x,y) to tile URLs. This is necessary because the URL naming
+     * also depends on the year the file data has been captured. See the technical specification of the dataset for details.
+     * @param downloader
+     * @return the URL mapping
+     * @throws IOException remote file retrieving errors
+     */
     private Map<String, String> fetchTileMapping(Downloader downloader) throws IOException {
-        String response = downloader.downloadAsString(Swissalti3dElevationProvider.tilingSchemeUrl, false);
-        // ex: {"href":"https://ogd.swisstopo.admin.ch/resources/ch.swisstopo.swissalti3d-9u0iezRG.csv"}
-        String csvUrl = response.split("\"")[3];
-        String csv = downloader.downloadAsString(csvUrl, false);
+        File cachedMappingFile = new File(cacheDir, "mappings.csv");
+        if (!cachedMappingFile.exists()) {
+            if (!cacheDir.exists()) {
+                cacheDir.mkdirs();
+            }
+            String response = downloader.downloadAsString(Swissalti3dElevationProvider.tilingSchemeUrl, false);
+            // ex: {"href":"https://ogd.swisstopo.admin.ch/resources/ch.swisstopo.swissalti3d-9u0iezRG.csv"}
+            String csvUrl = response.split("\"")[3];
+            downloader.downloadFile(csvUrl, cachedMappingFile.getAbsolutePath());
+        }
+
+        String csv = FileUtils.readFileToString(cachedMappingFile, "ascii");
         Scanner scanner = new Scanner(csv);
         Map<String, String> mapping = new HashMap<>();
         while (scanner.hasNextLine()) {
@@ -117,7 +146,7 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
         return String.format("%s-%s", x / 1000, y / 1000);
     }
 
-    private File getCachedTileFile(String xy, String tileUrl) {
+    File getCachedTileFile(String xy, String tileUrl) {
         int idx = tileUrl.lastIndexOf("/");
         String filename = tileUrl.substring(idx);
         File cachedFile = new File(cacheDir, filename);
@@ -148,8 +177,12 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
             downloader.downloadFile(tileUrl, cachedFile.getAbsolutePath());
         }
 
-        // Parse tif file are raster and return it
+        // Parse tif file as raster and return it
         raster = readTifFile(cachedFile);
+        if (rasterByXY.size() > 100) {
+            logger.debug("Clearing in memory raster cache");
+            rasterByXY.clear();
+        }
         rasterByXY.put(xy, raster);
         return raster;
     }
@@ -166,7 +199,8 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
             try {
                 Raster raster = getRasterContainingCoordinate(x, y);
                 // a tile is 500px for 1000m
-                float ele = raster.getSampleFloat(Math.floorMod(x, 1000) / 2, Math.floorMod(y, 1000) / 2, band);
+                // it is oriented North to South so we need to invert y
+                float ele = raster.getSampleFloat(Math.floorMod(x, 1000) / 2, 499 - Math.floorMod(y, 1000) / 2, band);
                 return ele;
             } catch (IOException e) {
                 logger.warn("Could not get raster data for (%d, %d)", x, y);
@@ -205,10 +239,14 @@ public class Swissalti3dElevationProvider implements ElevationProvider {
 
     public static void main(String[] args) {
         Swissalti3dElevationProvider provider = new Swissalti3dElevationProvider();
-        // Dent de Morcles 2571970 1116492
+        // Dent de Morcles 2571970 1116492 2969m
         // echo "2571970 1116492" | gdaltransform -t_srs EPSG:4326 -s_srs EPSG:2056
         // 7.07552341505788 46.1992990818056 0
-        // We need to reverse gdal's output
         System.out.println(provider.getEle(46.1992990818056, 7.07552341505788));
+    }
+
+    public Swissalti3dElevationProvider setAutoRemoveTemporaryFiles(boolean removeTempElevationFiles) {
+        autoremoveTemporary = removeTempElevationFiles;
+        return this;
     }
 }
